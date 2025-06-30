@@ -1,0 +1,1397 @@
+# Title: 类囊胚10X数据分析-250613 : Add new data + UMAP + Correlation + Heatmap
+# Data: Public blastoid 10X数据 + Public post-implantation drop-seq数据 + In house blastoid 10X
+# Author: Gaozy
+# Time: 2025-06-16
+
+# /home/zygao02/ - general_env - R
+# 0. Basic settings ----
+setwd("/home/qcao02/gaozy/blastocyst/")
+
+# 1. library ----
+library(Matrix) 
+library(Seurat) 
+library(ggplot2)
+library(ggpubr)
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(ggcorrplot)
+library(Hmisc)
+library(dplyr)
+library(reshape2)
+library(ggrepel)
+library(patchwork)
+library(sva)
+
+# 2. load data ----
+library(future)
+plan("multisession", workers = 6)
+plan("multicore", workers = 6)
+
+## ！RNA of blastocyst and blastoid ----
+### 1) GSM4026211 ----
+data <- Read10X(data.dir = "/home/fengyan02/Project/YYYProject202306/processedData/scRNAData/GSE135701/GSM4026211")
+
+GSM4026211 <- CreateSeuratObject(counts = data, project = "GSM4026211", assay = "RNA",
+                                 min.cells = 3, min.features = 300)
+
+GSM4026211$cell_info <- "EPS-blastoid"
+
+### 2) GSM4026212 ----
+data <- Read10X(data.dir = "/home/fengyan02/Project/YYYProject202306/processedData/scRNAData/GSE135701/GSM4026212")
+
+GSM4026212 <- CreateSeuratObject(counts = data, project = "GSM4026212", assay = "RNA",
+                                 min.cells = 3, min.features = 300)
+
+GSM4026212$cell_info <- "Public-blastocyst"
+
+### 3) GSM3940220 ----
+data_list <- lapply(list.files('rawdata/GSM3940220/'), function(x){
+  each_dir <- paste0('rawdata/GSM3940220/', x)
+  each_data <- Read10X(data.dir = each_dir)
+  #each_assay <- CreateAssayObject(counts = each_data, min.cells = 3, min.features = 300)
+  each_obj <- CreateSeuratObject(counts = each_data, assay = "RNA",
+                                 project = "GSM3940220", min.cells = 0, min.features = 300)
+})
+GSM3940220 <- merge(data_list[[1]],
+                    c(data_list[[2]], data_list[[3]], data_list[[4]], data_list[[5]]))
+
+count_layers <- GSM3940220[["RNA"]]@layers[c("counts.1", "counts.2", "counts.3", "counts.4", "counts.5")]
+# Combine cells across all layers
+combined_counts <- do.call(cbind, count_layers)
+
+colnames(combined_counts) <- colnames(GSM3940220)
+rownames(combined_counts) <- rownames(GSM3940220)
+
+GSM3940220[["RNA"]] <- CreateAssayObject(counts = combined_counts)
+
+GSM3940220$cell_info <- "EPT-blastoid"
+#GSM3940220$sample_info <- paste0("EPT-blastoid_",sub("^[A-Za-z]+_(\\d+)$", "\\1", colnames(GSM3940220)))
+
+### 4) GSM2916885 ----
+data <- read.delim("rawdata/GSM2916885_NR-BLAS1_H77FJBGX3_S3.coutt.csv",
+                   header = TRUE,
+                   check.names = F,
+                   row.names = 1)
+
+data$Gene <- gsub("__chr[0-9]+", "", rownames(data))
+data <- data %>% group_by(Gene) %>%
+  dplyr::summarise(across(everything(), ~mean(. , na.rm = TRUE))) %>% 
+  tibble::column_to_rownames("Gene")
+
+#assay_data <- CreateAssayObject(counts = Matrix(as.matrix(data), sparse = TRUE), min.cells = 3, min.features = 300)
+GSM2916885 <-CreateSeuratObject(counts = data, assay = "RNA",
+                                project = "GSM2916885", min.cells = 0, min.features = 300)
+GSM2916885$cell_info <- "ET-blastoid"
+
+### 5) GSM6710285 & GSM6710286 ----
+data <- read.delim("rawdata/GSE197779_SC-TBLCs-Blastoids.matrix.txt",
+                   header = TRUE,
+                   check.names = F,
+                   row.names = 1)
+#assay_data <- CreateAssayObject(counts = Matrix(as.matrix(data), sparse = TRUE), min.cells = 3, min.features = 300)
+GSE197779 <-CreateSeuratObject(counts = data, assay = "RNA",
+                               project = "GSE197779", min.cells = 0, min.features = 300)
+GSE197779$cell_info <- "TBLC-blastoid"
+#GSE197779$sample_info <- ifelse (sub("^[A-Za-z]+-(\\d+)$", "\\1", colnames(GSE197779)) == 0,
+#                                 paste0("TBLC-blastoid","_1"), paste0("TBLC-blastoid","_2"))
+
+### 6) GSM6070537 ----
+data <- Read10X(data.dir = "rawdata/GSM6070537-TPS-blastoid/")
+#assay_data <- CreateAssayObject(counts = data, min.cells = 3, min.features = 300)
+GSM6070537 <- CreateSeuratObject(counts = data, assay = "RNA",
+                                 project = "GSM6070537", min.cells = 0, min.features = 300)
+GSM6070537$cell_info <- "TPSC-blastoid"
+
+### 7) GSM7798459 ----
+data <- read.delim("rawdata/GSM7798459/GSM7798459_mTBLC-2MYCP-blastoid_count.txt",
+                   header = TRUE,
+                   check.names = F)
+#assay_data <- CreateAssayObject(counts = Matrix(as.matrix(data), sparse = TRUE), min.cells = 3, min.features = 300)
+GSM7798459 <- CreateSeuratObject(counts = data, assay = "RNA",
+                                 project = "GSM7798459", min.cells = 0, min.features = 300)
+GSM7798459$cell_info <- "2MYCP-Blastoid"
+
+## ！RNA of post-implantation ----
+### 1) GSM5701539 ----
+data <- read.delim("/home/qcao02/gaozy/blastocyst/rawdata/GSE189425/GSM5701539_NE65_1.inex.txt")
+data$Gene <- sub(".*?_", "", rownames(data))
+data <- data %>% group_by(Gene) %>%
+  dplyr::summarise(across(everything(), ~mean(. , na.rm = TRUE))) %>% 
+  tibble::column_to_rownames("Gene")
+
+GSM5701539 <- CreateSeuratObject(counts = data, assay = "RNA",
+                                 project = "GSM5701539", min.cells = 0, min.features = 300)
+GSM5701539$cell_info <- "E6.5"
+
+### 2) GSM5701540 ----
+data <- read.delim("/home/qcao02/gaozy/blastocyst/rawdata/GSE189425/GSM5701540_NE65_2.inex.txt")
+data$Gene <- sub(".*?_", "", rownames(data))
+data <- data %>% group_by(Gene) %>%
+  dplyr::summarise(across(everything(), ~mean(. , na.rm = TRUE))) %>% 
+  tibble::column_to_rownames("Gene")
+
+GSM5701540 <- CreateSeuratObject(counts = data, assay = "RNA",
+                                 project = "GSM5701540", min.cells = 0, min.features = 300)
+GSM5701540$cell_info <- "E6.5"
+
+### 3) GSM5701541 ----
+data <- read.delim("/home/qcao02/gaozy/blastocyst/rawdata/GSE189425/GSM5701541_NE75_1.inex.txt")
+data$Gene <- sub(".*?_", "", rownames(data))
+data <- data %>% group_by(Gene) %>%
+  dplyr::summarise(across(everything(), ~mean(. , na.rm = TRUE))) %>% 
+  tibble::column_to_rownames("Gene")
+
+GSM5701541 <- CreateSeuratObject(counts = data, assay = "RNA",
+                                 project = "GSM5701541", min.cells = 0, min.features = 300)
+GSM5701541$cell_info <- "E7.5"
+
+### 4) GSM5701542 ----
+data <- read.delim("/home/qcao02/gaozy/blastocyst/rawdata/GSE189425/GSM5701542_NE75_2.inex.txt")
+data$Gene <- sub(".*?_", "", rownames(data))
+data <- data %>% group_by(Gene) %>%
+  dplyr::summarise(across(everything(), ~mean(. , na.rm = TRUE))) %>% 
+  tibble::column_to_rownames("Gene")
+
+GSM5701542 <- CreateSeuratObject(counts = data, assay = "RNA",
+                                 project = "GSM5701542", min.cells = 0, min.features = 300)
+GSM5701542$cell_info <- "E7.5"
+
+### 5) GSM5701543 ----
+data <- read.delim("/home/qcao02/gaozy/blastocyst/rawdata/GSE189425/GSM5701543_NE85_1.inex.txt")
+data$Gene <- sub(".*?_", "", rownames(data))
+data <- data %>% group_by(Gene) %>%
+  dplyr::summarise(across(everything(), ~mean(. , na.rm = TRUE))) %>% 
+  tibble::column_to_rownames("Gene")
+
+GSM5701543 <- CreateSeuratObject(counts = data, assay = "RNA",
+                                 project = "GSM5701543", min.cells = 0, min.features = 300)
+GSM5701543$cell_info <- "E8.5"
+
+### 6) GSM5701544 ----
+data <- read.delim("/home/qcao02/gaozy/blastocyst/rawdata/GSE189425/GSM5701544_NE85_2.inex.txt")
+data$Gene <- sub(".*?_", "", rownames(data))
+data <- data %>% group_by(Gene) %>%
+  dplyr::summarise(across(everything(), ~mean(. , na.rm = TRUE))) %>% 
+  tibble::column_to_rownames("Gene")
+
+GSM5701544 <- CreateSeuratObject(counts = data, assay = "RNA",
+                                 project = "GSM5701544", min.cells = 0, min.features = 300)
+GSM5701544$cell_info <- "E8.5"
+
+### 7) GSM5701545 ----
+data <- read.delim("/home/qcao02/gaozy/blastocyst/rawdata/GSE189425/GSM5701545_NE85_3.inex.txt")
+data$Gene <- sub(".*?_", "", rownames(data))
+data <- data %>% group_by(Gene) %>%
+  dplyr::summarise(across(everything(), ~mean(. , na.rm = TRUE))) %>% 
+  tibble::column_to_rownames("Gene")
+
+GSM5701545 <- CreateSeuratObject(counts = data, assay = "RNA",
+                                 project = "GSM5701545", min.cells = 0, min.features = 300)
+GSM5701545$cell_info <- "E8.5"
+
+### 8) GSM5701546 ----
+data <- read.delim("/home/qcao02/gaozy/blastocyst/rawdata/GSE189425/GSM5701546_NE85_4.inex.txt")
+data$Gene <- sub(".*?_", "", rownames(data))
+data <- data %>% group_by(Gene) %>%
+  dplyr::summarise(across(everything(), ~mean(. , na.rm = TRUE))) %>% 
+  tibble::column_to_rownames("Gene")
+
+GSM5701546 <- CreateSeuratObject(counts = data, assay = "RNA",
+                                 project = "GSM5701546", min.cells = 0, min.features = 300)
+GSM5701546$cell_info <- "E8.5"
+
+### 9) GSM5701547 ----
+data <- read.delim("/home/qcao02/gaozy/blastocyst/rawdata/GSE189425/GSM5701547_NE85_5.inex.txt")
+data$Gene <- sub(".*?_", "", rownames(data))
+data <- data %>% group_by(Gene) %>%
+  dplyr::summarise(across(everything(), ~mean(. , na.rm = TRUE))) %>% 
+  tibble::column_to_rownames("Gene")
+
+GSM5701547 <- CreateSeuratObject(counts = data, assay = "RNA",
+                                 project = "GSM5701547", min.cells = 0, min.features = 300)
+GSM5701547$cell_info <- "E8.5"
+
+### 10) GSM5701548 ----
+data <- read.delim("/home/qcao02/gaozy/blastocyst/rawdata/GSE189425/GSM5701548_NE85_6.inex.txt")
+data$Gene <- sub(".*?_", "", rownames(data))
+data <- data %>% group_by(Gene) %>%
+  dplyr::summarise(across(everything(), ~mean(. , na.rm = TRUE))) %>% 
+  tibble::column_to_rownames("Gene")
+
+GSM5701548 <- CreateSeuratObject(counts = data, assay = "RNA",
+                                 project = "GSM5701548", min.cells = 0, min.features = 300)
+GSM5701548$cell_info <- "E8.5"
+
+## ！Inhouse Blastoid 10x ----
+inhouse_filtered <- readRDS("250430/inhouse_blastoid_filtered.rds")
+
+setwd("/home/zygao02/blastoid/250616/")
+# 3. Combine data by "merge" ----
+## a. merge data ----
+dataset_list <- list(
+  GSE197779, GSM2916885, GSM3940220, GSM4026211, GSM4026212, # 10x
+  GSM5701539, GSM5701540, GSM5701541, GSM5701542, GSM5701543, GSM5701544, # drop-seq
+  GSM5701545, GSM5701546, GSM5701547, GSM5701548, GSM6070537, GSM7798459, # drop-seq
+  inhouse_filtered # 10x
+)
+
+gene_lists <- lapply(dataset_list, function(obj) {
+  rownames(obj)
+})
+
+union_genes <- Reduce(union, gene_lists)
+
+expanded_list <- lapply(dataset_list, function(obj) {
+  mat <- GetAssayData(obj, slot = "counts", assay = "RNA")
+  padded_mat <- Matrix(0, nrow = length(union_genes), ncol = ncol(mat), sparse = TRUE)
+  rownames(padded_mat) <- union_genes
+  colnames(padded_mat) <- colnames(mat)
+  common <- intersect(rownames(mat), union_genes)
+  padded_mat[common, ] <- mat[common, ]
+  new_obj <- CreateSeuratObject(counts = padded_mat, project = obj@project.name)
+  new_obj <- AddMetaData(new_obj, metadata = obj@meta.data)
+  return(new_obj)
+})
+
+merged_obj <- merge(expanded_list[[1]], y = expanded_list[-1], merge.data = TRUE)
+
+count_layers <- merged_obj[["RNA"]]@layers[grep("^counts\\.", names(merged_obj[["RNA"]]@layers), value = TRUE)]
+# Combine cells across all layers
+combined_counts <- do.call(cbind, count_layers)
+
+colnames(combined_counts) <- colnames(merged_obj)
+rownames(combined_counts) <- rownames(merged_obj)
+
+merged_obj[["RNA"]] <- CreateAssayObject(counts = combined_counts)
+merge_data <- merged_obj
+
+saveRDS(merge_data, "raw_merge_data.rds")
+
+# 4. PCA ----
+RhpcBLASctl::blas_set_num_threads(8)
+# Variable features
+Idents(merge_data) <- "cell_info"
+
+merge_data <- FindVariableFeatures(merge_data, selection.method = 'vst', nfeatures = 2000)
+
+### a. PCA with selected PCs ----
+merge_data <- ScaleData(merge_data, features = VariableFeatures(merge_data)) %>%
+  RunPCA(npcs = 50, features = VariableFeatures(merge_data))
+
+p <- ElbowPlot(merge_data, ndims = 50)
+
+pdf("pca_elbow_merge.pdf", width = 6, height = 4, onefile = F)
+p
+dev.off()
+
+### b. pca ----
+merge_data <- ScaleData(merge_data, features = VariableFeatures(merge_data), do.center = TRUE) %>%
+  RunPCA(npcs = 30, features = VariableFeatures(merge_data))
+
+## Get PCA coordinates and metadata
+pca_var <- merge_data[["pca"]]@stdev^2
+pca_var_perc <- round(100 * pca_var / sum(pca_var), 2)
+
+p <- DimPlot( merge_data, reduction = "pca", dims = c(1, 2), group.by = "cell_info", label = TRUE, repel = TRUE, pt.size = 2) +
+  labs( x = paste0("PC1 (", pca_var_perc[1], "%)"),
+        y = paste0("PC2 (", pca_var_perc[2], "%)") )+ guides(color = guide_legend(ncol = 1))
+
+pdf("PCA_merge.pdf", width=20, height=19, onefile = F)
+print(p)
+dev.off()
+
+# 5. UMAP & tSNE ----
+library(clustree)
+library(ggplot2)
+
+### a. compare diff resolutions ----
+merge_data <- FindNeighbors(merge_data, dims = 1:30)
+
+resolutions <- c(0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2)
+merge_data <- FindClusters(merge_data, resolution = resolutions, verbose = FALSE)
+
+clustree_plot <- clustree(merge_data@meta.data, 
+                          prefix = "RNA_snn_res",
+                          #node_colour = "sc3_stability"
+) +
+  ggtitle("Cluster Stability Across Resolutions")
+
+ggsave("clustree_resolution_analysis_merge.pdf", clustree_plot, width = 10, height = 8)
+
+### b. select a resolution ----
+merge_data <- FindClusters(merge_data, resolution = 1.2)
+merge_data <- RunTSNE(merge_data, dims = 1:30 )
+merge_data <- RunUMAP(merge_data, dims = 1:30 )
+
+p1 <- DimPlot(merge_data, reduction = "umap", group.by = "cell_info", label = TRUE, repel = TRUE, pt.size = 2)+ guides(color = guide_legend(ncol = 1))
+p2 <- DimPlot(merge_data, reduction = "umap", group.by = "RNA_snn_res.1.2", label = TRUE, repel = TRUE, pt.size = 2)+ guides(color = guide_legend(ncol = 1))
+
+p3 <- DimPlot(merge_data, reduction = "tsne", group.by = "cell_info", label = TRUE, repel = TRUE, pt.size = 2)+ guides(color = guide_legend(ncol = 1))
+p4 <- DimPlot(merge_data, reduction = "tsne", group.by = "RNA_snn_res.1.2", label = TRUE, repel = TRUE, pt.size = 2)+ guides(color = guide_legend(ncol = 1))
+
+pdf( "umap_merge.pdf" , width=12, height=5, onefile = F)
+print( p1 | p2)
+dev.off()
+
+pdf( "tsne_merge.pdf" , width=12, height=5, onefile = F)
+print( p3 | p4)
+dev.off()
+
+pdf( "umap_tsne_merge.pdf" , width=12, height=5, onefile = F)
+print( p1 | p3)
+dev.off()
+
+# 6. Down sample for PCA & UMAP ----
+## 1) down sampling ----
+####### merge_data
+meta <- merge_data@meta.data
+meta$cell <- rownames(meta)
+
+set.seed(2026)
+target_types <- c("E6.5", "E7.5", "E8.5")
+
+meta_split <- split(meta, meta$cell_info)
+
+sampled_list <- lapply(names(meta_split), function(celltype) {
+  df <- meta_split[[celltype]]
+  if (celltype %in% target_types) {
+    df <- df[sample(nrow(df), min(1000, nrow(df))), ]
+  }
+  return(df)
+})
+
+sampled_meta <- do.call(rbind, sampled_list)
+
+sampled_cells <- sampled_meta$cell
+merge_data_subset <- subset(merge_data, cells = sampled_cells)
+
+table(merge_data_subset$cell_info)
+
+## 2) PCA ----
+RhpcBLASctl::blas_set_num_threads(8)
+# Variable features
+Idents(merge_data_subset) <- "cell_info"
+
+merge_data_subset <- FindVariableFeatures(merge_data_subset, selection.method = 'vst', nfeatures = 2000)
+
+#### a. PCA with selected PCs ----
+merge_data_subset <- ScaleData(merge_data_subset, features = VariableFeatures(merge_data_subset)) %>%
+  RunPCA(npcs = 50, features = VariableFeatures(merge_data_subset))
+
+p <- ElbowPlot(merge_data_subset, ndims = 50)
+
+pdf("pca_elbow_merge_subset.pdf", width = 6, height = 4, onefile = F)
+p
+dev.off()
+
+#### b. pca ----
+merge_data_subset <- ScaleData(merge_data_subset, features = VariableFeatures(merge_data_subset), do.center = TRUE) %>%
+  RunPCA(npcs = 30, features = VariableFeatures(merge_data_subset))
+
+## Get PCA coordinates and metadata
+pca_var <- merge_data_subset[["pca"]]@stdev^2
+pca_var_perc <- round(100 * pca_var / sum(pca_var), 2)
+
+p <- DimPlot( merge_data_subset, reduction = "pca", dims = c(1, 2), group.by = "cell_info", label = TRUE, repel = TRUE, pt.size = 2) +
+  labs( x = paste0("PC1 (", pca_var_perc[1], "%)"),
+        y = paste0("PC2 (", pca_var_perc[2], "%)") )+ guides(color = guide_legend(ncol = 1))
+
+pdf("PCA_merge_subset.pdf", width=20, height=19, onefile = F)
+print(p)
+dev.off()
+
+## 3) UMAP & tSNE ----
+library(clustree)
+library(ggplot2)
+
+#### a. compare diff resolutions ----
+merge_data_subset <- FindNeighbors(merge_data_subset, dims = 1:30)
+
+resolutions <- c(0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2)
+merge_data_subset <- FindClusters(merge_data_subset, resolution = resolutions, verbose = FALSE)
+
+clustree_plot <- clustree(merge_data_subset@meta.data, 
+                          prefix = "RNA_snn_res",
+                          #node_colour = "sc3_stability"
+) +
+  ggtitle("Cluster Stability Across Resolutions")
+
+ggsave("clustree_resolution_analysis_merge_subset.pdf", clustree_plot, width = 10, height = 8)
+
+#### b. select a resolution ----
+merge_data_subset <- FindClusters(merge_data_subset, resolution = 1.2)
+merge_data_subset <- RunTSNE(merge_data_subset, dims = 1:30 )
+merge_data_subset <- RunUMAP(merge_data_subset, dims = 1:30 )
+
+p1 <- DimPlot(merge_data_subset, reduction = "umap", group.by = "cell_info", label = TRUE, repel = TRUE, pt.size = 2)+ guides(color = guide_legend(ncol = 1))
+p2 <- DimPlot(merge_data_subset, reduction = "umap", group.by = "RNA_snn_res.1.2", label = TRUE, repel = TRUE, pt.size = 2)+ guides(color = guide_legend(ncol = 1))
+
+p3 <- DimPlot(merge_data_subset, reduction = "tsne", group.by = "cell_info", label = TRUE, repel = TRUE, pt.size = 2)+ guides(color = guide_legend(ncol = 1))
+p4 <- DimPlot(merge_data_subset, reduction = "tsne", group.by = "RNA_snn_res.1.2", label = TRUE, repel = TRUE, pt.size = 2)+ guides(color = guide_legend(ncol = 1))
+
+pdf( "umap_merge_subset.pdf" , width=12, height=5, onefile = F)
+print( p1 | p2)
+dev.off()
+
+pdf( "tsne_merge_subset.pdf" , width=12, height=5, onefile = F)
+print( p3 | p4)
+dev.off()
+
+pdf( "umap_tsne_merge_subset.pdf" , width=12, height=5, onefile = F)
+print( p1 | p3)
+dev.off()
+
+saveRDS(merge_data_subset, "raw_merge_data_subset.rds")
+
+# 7. Cell info & HVG  ----
+dataset <- merge_data
+output_folder <- "."
+
+### a. Pseudobulk ----
+data_type <- "merge_data"
+ident_by <- "cell_info"
+use_all_genes <- FALSE
+
+Idents(dataset) <- ident_by
+
+on.exit({
+  while(dev.cur() > 1) dev.off()
+})
+
+file_names_prefix <- paste0(output_folder, "/", data_type, "-", ident_by, "-", ifelse(use_all_genes, "All_genes", "Hvg"), "-")
+
+# Pseudobulk
+dataset <- NormalizeData(dataset, normalization.method = "LogNormalize", scale.factor = 10000)
+pb_seurat <- Seurat:::PseudobulkExpression(dataset, return.seurat = T, method = "aggregate", # "average"
+                                           normalization.method = "LogNormalize", scale.factor = 10000)
+pb_seurat[[ident_by]] <- rownames(pb_seurat@meta.data)
+
+RhpcBLASctl::blas_set_num_threads(8)
+Idents(pb_seurat) <- ident_by
+
+# Variable features
+pb_seurat <- FindVariableFeatures(pb_seurat, selection.method = "vst", nfeatures = 2000)
+
+### b. PCA with selected PCs ----
+features_to_use <- if (use_all_genes) rownames(pb_seurat) else VariableFeatures(pb_seurat)
+pb_seurat <- ScaleData(pb_seurat, features = features_to_use) %>%
+  RunPCA(npcs = 10, features = features_to_use)
+
+pb_seurat <- JackStraw(pb_seurat, num.replicate = 10, dims = 14)
+pb_seurat <- ScoreJackStraw(pb_seurat, dims = 1:10) 
+
+p1 <- JackStrawPlot(pb_seurat, dims = 1:10)
+p2 <- ElbowPlot(pb_seurat, ndims = 10)
+
+pdf(paste0(file_names_prefix, "pca_elbow.pdf"), width = 12, height = 5, onefile = F)
+p1 | p2
+dev.off()
+
+pb_seurat <- ScaleData(pb_seurat, features = features_to_use) %>%
+  RunPCA(npcs = 8, features = features_to_use)
+
+## Get PCA coordinates and metadata
+pca_var <- pb_seurat[["pca"]]@stdev^2
+pca_var_perc <- round(100 * pca_var / sum(pca_var), 2)
+
+p <- DimPlot( pb_seurat, reduction = "pca", dims = c(1, 2), group.by = ident_by, label = TRUE, repel = TRUE, pt.size = 5) +
+  labs( x = paste0("PC1 (", pca_var_perc[1], "%)"),
+        y = paste0("PC2 (", pca_var_perc[2], "%)") )+ guides(color = guide_legend(ncol = 1))
+
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "PCA.pdf"), width=8, height=6, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "PCA.pdf"), width=25, height=23, onefile = F)
+}
+print(p)
+dev.off()
+
+### c. UMAP & tSNE ----
+pb_seurat <- RunTSNE(pb_seurat, dims = 1:8, perplexity = 3)
+pb_seurat <- RunUMAP(pb_seurat, dims = 1:8, n.neighbors = 2)
+
+p1 <- DimPlot(pb_seurat, reduction = "umap", group.by = ident_by, label = TRUE, repel = TRUE, pt.size = 5)+ guides(color = guide_legend(ncol = 1))
+p2 <- DimPlot(pb_seurat, reduction = "tsne", group.by = ident_by, label = TRUE, repel = TRUE, pt.size = 5)+ guides(color = guide_legend(ncol = 1))
+
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "umap_tsne.pdf"), width=20, height=10, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "umap_tsne.pdf"), width=33, height=15, onefile = F)
+}
+print(p1 | p2 )
+dev.off()
+
+### d. Correlation ----
+counts_mat <- GetAssayData(pb_seurat, assay = "RNA", slot = "scale.data")
+
+## Extract relevant columns for blastoid and E3.5-6.5 embryo
+blastoid_columns <- grep("blastoid|Blastoid", colnames(counts_mat), value = T)
+embryo_columns <- grep("E[3-8]\\.5|blastocyst", colnames(counts_mat), value = T)
+
+## Subset the data to focus on these columns (blastoid samples as x-axis, E3.5-6.5 embryos as y-axis)
+data_subset <- counts_mat[, c(blastoid_columns, embryo_columns)]
+
+## Perform Pearson correlation on the subsetted data
+correlation_matrix <- cor(data_subset[, embryo_columns],
+                          data_subset[, blastoid_columns],
+                          method = "pearson")
+
+## corr dotplot
+corr_long <- melt(correlation_matrix)
+colnames(corr_long) <- c("Sample1", "Sample2", "Correlation")
+
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "Corr.pdf"), width=6, height=5, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "Corr.pdf"), width=11, height=6, onefile = F)
+}
+print(  ggplot(corr_long, aes(x = Sample2, y = Sample1, size = (Correlation), color = Correlation)) +
+          geom_point() +
+          scale_size_continuous(range = c(2, 10)) +
+          scale_color_gradientn(colors = colorRampPalette(rev(brewer.pal(9, "Spectral")))(100)) +
+          theme_minimal() +
+          theme(axis.text.x = element_text(angle = 90, hjust = 1),
+                panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),) +
+          labs(title = "Correlation Dotplot", x = "", y = "", color = "Correlation") +
+          guides(size = "none") )
+dev.off()
+
+### e. Find markers for post-implantation stages ----
+markers_post_implantation_8 <- FindMarkers(
+  pb_seurat, 
+  slot = "data",
+  min.cells.group = 1,
+  ident.1 = c("E8.5"),
+  ident.2 = c("E7.5", "E6.5", "Public-blastocyst"), 
+  only.pos = T,
+  logfc.threshold = 0.25)
+markers_post_implantation_8_ordered <- markers_post_implantation_8 %>%
+  arrange(desc(avg_log2FC)) %>%
+  mutate(group = "E8.5")
+
+markers_post_implantation_7 <- FindMarkers(
+  pb_seurat, 
+  slot = "data",
+  min.cells.group = 1,
+  ident.1 = c("E7.5"),
+  ident.2 = c("E8.5", "E6.5", "Public-blastocyst"), 
+  only.pos = T,
+  logfc.threshold = 0.25)
+markers_post_implantation_7_ordered <- markers_post_implantation_7 %>%
+  arrange(desc(avg_log2FC)) %>%
+  mutate(group = "E7.5")
+
+markers_post_implantation_6 <- FindMarkers(
+  pb_seurat, 
+  slot = "data",
+  min.cells.group = 1,
+  ident.1 = c("E6.5"),
+  ident.2 = c("E7.5", "E8.5", "Public-blastocyst"), 
+  only.pos = T,
+  logfc.threshold = 0.25)
+markers_post_implantation_6_ordered <- markers_post_implantation_6 %>%
+  arrange(desc(avg_log2FC)) %>%
+  mutate(group = "E6.5")
+
+counts_mat <- GetAssayData(pb_seurat, assay = "RNA", slot = "scale.data")
+stage_info <- colnames(counts_mat)
+
+cols_E4_E8 <- grep("E4.5|E5.5|E6.5|E7.5|E8.5", stage_info, value = TRUE)
+cols_blast <- grep("Blastocyst|blastocyst", stage_info, value = TRUE)
+
+max_expr_post <- apply(counts_mat[, cols_E4_E8], 1, max)
+
+mean_expr_blast <- apply(matrix(counts_mat[, cols_blast], ncol = 1), 1, mean)
+
+expr_diff <- max_expr_post - mean_expr_blast
+
+genes_post_implantation <- data.frame(
+  gene = names(expr_diff)[which(expr_diff > 3)],
+  expr_diff = expr_diff[which(expr_diff > 3)]
+) %>% arrange(desc(expr_diff))
+dim(genes_post_implantation)
+
+heat_data <- counts_mat[genes_post_implantation$gene, ]
+
+heat_data_z <- t(scale(t(heat_data)))
+
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_heatmap_diff3.pdf"), width=8, height=10, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_heatmap_diff3.pdf"), width=10, height=15, onefile = F)
+}
+print(pheatmap(heat_data_z, show_rownames = FALSE))
+dev.off()
+
+top50_8 <- rownames(markers_post_implantation_8_ordered)[1:500]
+top50_7 <- rownames(markers_post_implantation_7_ordered)[1:500]
+top50_6 <- rownames(markers_post_implantation_6_ordered)[1:500]
+
+# Union all top genes
+top_union_genes <- union(top50_8, union(top50_7, top50_6))
+
+exp_data <- GetAssayData(pb_seurat, assay = "RNA", slot = "scale.data")
+exp_data <- exp_data[intersect(rownames(exp_data), top_union_genes), ]
+colnames(exp_data) <- colnames(pb_seurat)
+
+meta <- pb_seurat@meta.data
+exp_scale = exp_data
+
+#### plot heatmap ---- 
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_heatmap.pdf"), width=8, height=10, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_heatmap.pdf"), width=10, height=15, onefile = F)
+}
+print(
+  Heatmap(as.matrix(exp_scale[intersect(rownames(exp_scale), top_union_genes),]),
+          column_split = meta[ident_by],
+          show_row_names = F,
+          show_column_names = T,  # Show column names
+          show_column_dend = T,  # Show column dendrogram
+          column_title = "Post-implantation stage-specific genes expression",
+          use_raster = F,
+          col = colorRampPalette(rev(brewer.pal(9,"Spectral")))(100),
+          heatmap_legend_param = list(title='')))
+dev.off()
+
+### f. UMAP feature plot ----
+genes_to_plot <- head(genes_post_implantation, 25)[,1]
+
+plots <- lapply(genes_to_plot, function(gene) {
+  FeaturePlot(merge_data, features = gene, pt.size = 0.1, cols = c("lightgrey", "brown"), reduction = "umap", min.cutoff = "q05", max.cutoff = "q95") +
+    theme_void() + ggtitle(gene)
+})
+
+if (ident_by == "cell_info") {
+  png(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_umap_feature_plot.png"),
+      width = 3000, height = 3000, res = 300)
+} else {
+  png(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_umap_feature_plot.png"),
+      width = 3000, height = 3000, res = 300)
+}
+
+print(wrap_plots(plots, ncol = 5))
+dev.off()
+
+### g. save data ----
+saveRDS(pb_seurat, paste0(file_names_prefix, "data.rds"))
+write.table(genes_post_implantation,paste0(file_names_prefix, "_diff over 3 genes for heatmap.txt"), sep = "\t")
+write.csv(markers_post_implantation_8_ordered, paste0(file_names_prefix, "_E8.5_DEG.csv"), quote = F, row.names = T)
+write.csv(markers_post_implantation_7_ordered, paste0(file_names_prefix, "_E7.5_DEG.csv"), quote = F, row.names = T)
+write.csv(markers_post_implantation_6_ordered, paste0(file_names_prefix, "_E6.5_DEG.csv"), quote = F, row.names = T)
+
+## 2) merge_data_subset ----
+dataset <- merge_data_subset
+output_folder <- "."
+
+### a. Pseudobulk ----
+data_type <- "merge_data_subset"
+ident_by <- "cell_info"
+use_all_genes <- FALSE
+
+Idents(dataset) <- ident_by
+
+on.exit({
+  while(dev.cur() > 1) dev.off()
+})
+
+file_names_prefix <- paste0(output_folder, "/", data_type, "-", ident_by, "-", ifelse(use_all_genes, "All_genes", "Hvg"), "-")
+
+# Pseudobulk
+dataset <- NormalizeData(dataset, normalization.method = "LogNormalize", scale.factor = 10000)
+pb_seurat <- Seurat:::PseudobulkExpression(dataset, return.seurat = T, method = "aggregate", # "average"
+                                           normalization.method = "LogNormalize", scale.factor = 10000)
+pb_seurat[[ident_by]] <- rownames(pb_seurat@meta.data)
+
+RhpcBLASctl::blas_set_num_threads(8)
+Idents(pb_seurat) <- ident_by
+
+# Variable features
+pb_seurat <- FindVariableFeatures(pb_seurat, selection.method = "vst", nfeatures = 2000)
+
+### b. PCA with selected PCs ----
+features_to_use <- if (use_all_genes) rownames(pb_seurat) else VariableFeatures(pb_seurat)
+pb_seurat <- ScaleData(pb_seurat, features = features_to_use) %>%
+  RunPCA(npcs = 10, features = features_to_use)
+
+pb_seurat <- JackStraw(pb_seurat, num.replicate = 10, dims = 14)
+pb_seurat <- ScoreJackStraw(pb_seurat, dims = 1:10) 
+
+p1 <- JackStrawPlot(pb_seurat, dims = 1:10)
+p2 <- ElbowPlot(pb_seurat, ndims = 10)
+
+pdf(paste0(file_names_prefix, "pca_elbow.pdf"), width = 12, height = 5, onefile = F)
+p1 | p2
+dev.off()
+
+pb_seurat <- ScaleData(pb_seurat, features = features_to_use) %>%
+  RunPCA(npcs = 7, features = features_to_use)
+
+## Get PCA coordinates and metadata
+pca_var <- pb_seurat[["pca"]]@stdev^2
+pca_var_perc <- round(100 * pca_var / sum(pca_var), 2)
+
+p <- DimPlot( pb_seurat, reduction = "pca", dims = c(1, 2), group.by = ident_by, label = TRUE, repel = TRUE, pt.size = 5) +
+  labs( x = paste0("PC1 (", pca_var_perc[1], "%)"),
+        y = paste0("PC2 (", pca_var_perc[2], "%)") )+ guides(color = guide_legend(ncol = 1))
+
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "PCA.pdf"), width=8, height=6, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "PCA.pdf"), width=25, height=23, onefile = F)
+}
+print(p)
+dev.off()
+
+### c. UMAP & tSNE ----
+pb_seurat <- RunTSNE(pb_seurat, dims = 1:7, perplexity = 3)
+pb_seurat <- RunUMAP(pb_seurat, dims = 1:7, n.neighbors = 2)
+
+p1 <- DimPlot(pb_seurat, reduction = "umap", group.by = ident_by, label = TRUE, repel = TRUE, pt.size = 5)+ guides(color = guide_legend(ncol = 1))
+p2 <- DimPlot(pb_seurat, reduction = "tsne", group.by = ident_by, label = TRUE, repel = TRUE, pt.size = 5)+ guides(color = guide_legend(ncol = 1))
+
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "umap_tsne.pdf"), width=20, height=10, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "umap_tsne.pdf"), width=33, height=15, onefile = F)
+}
+print(p1 | p2 )
+dev.off()
+
+### d. Correlation ----
+counts_mat <- GetAssayData(pb_seurat, assay = "RNA", slot = "scale.data")
+
+## Extract relevant columns for blastoid and E3.5-6.5 embryo
+blastoid_columns <- grep("blastoid|Blastoid", colnames(counts_mat), value = T)
+embryo_columns <- grep("E[3-8]\\.5|blastocyst", colnames(counts_mat), value = T)
+
+## Subset the data to focus on these columns (blastoid samples as x-axis, E3.5-6.5 embryos as y-axis)
+data_subset <- counts_mat[, c(blastoid_columns, embryo_columns)]
+
+## Perform Pearson correlation on the subsetted data
+correlation_matrix <- cor(data_subset[, embryo_columns],
+                          data_subset[, blastoid_columns],
+                          method = "pearson")
+
+## corr dotplot
+corr_long <- melt(correlation_matrix)
+colnames(corr_long) <- c("Sample1", "Sample2", "Correlation")
+
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "Corr.pdf"), width=6, height=5, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "Corr.pdf"), width=11, height=6, onefile = F)
+}
+print(  ggplot(corr_long, aes(x = Sample2, y = Sample1, size = (Correlation), color = Correlation)) +
+          geom_point() +
+          scale_size_continuous(range = c(2, 10)) +
+          scale_color_gradientn(colors = colorRampPalette(rev(brewer.pal(9, "Spectral")))(100)) +
+          theme_minimal() +
+          theme(axis.text.x = element_text(angle = 90, hjust = 1),
+                panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),) +
+          labs(title = "Correlation Dotplot", x = "", y = "", color = "Correlation") +
+          guides(size = "none") )
+dev.off()
+
+### e. Find markers for post-implantation stages ----
+markers_post_implantation_8 <- FindMarkers(
+  pb_seurat, 
+  slot = "data",
+  min.cells.group = 1,
+  ident.1 = c("E8.5"),
+  ident.2 = c("E7.5", "E6.5", "Public-blastocyst"), 
+  only.pos = T,
+  logfc.threshold = 0.25)
+markers_post_implantation_8_ordered <- markers_post_implantation_8 %>%
+  arrange(desc(avg_log2FC)) %>%
+  mutate(group = "E8.5")
+
+markers_post_implantation_7 <- FindMarkers(
+  pb_seurat, 
+  slot = "data",
+  min.cells.group = 1,
+  ident.1 = c("E7.5"),
+  ident.2 = c("E8.5", "E6.5", "Public-blastocyst"), 
+  only.pos = T,
+  logfc.threshold = 0.25)
+markers_post_implantation_7_ordered <- markers_post_implantation_7 %>%
+  arrange(desc(avg_log2FC)) %>%
+  mutate(group = "E7.5")
+
+markers_post_implantation_6 <- FindMarkers(
+  pb_seurat, 
+  slot = "data",
+  min.cells.group = 1,
+  ident.1 = c("E6.5"),
+  ident.2 = c("E7.5", "E8.5", "Public-blastocyst"), 
+  only.pos = T,
+  logfc.threshold = 0.25)
+markers_post_implantation_6_ordered <- markers_post_implantation_6 %>%
+  arrange(desc(avg_log2FC)) %>%
+  mutate(group = "E6.5")
+
+counts_mat <- GetAssayData(pb_seurat, assay = "RNA", slot = "scale.data")
+stage_info <- colnames(counts_mat)
+
+cols_E4_E8 <- grep("E4.5|E5.5|E6.5|E7.5|E8.5", stage_info, value = TRUE)
+cols_blast <- grep("Blastocyst|blastocyst", stage_info, value = TRUE)
+
+max_expr_post <- apply(counts_mat[, cols_E4_E8], 1, max)
+
+mean_expr_blast <- apply(matrix(counts_mat[, cols_blast], ncol = 1), 1, mean)
+
+expr_diff <- max_expr_post - mean_expr_blast
+
+genes_post_implantation <- data.frame(
+  gene = names(expr_diff)[which(expr_diff > 3)],
+  expr_diff = expr_diff[which(expr_diff > 3)]
+) %>% arrange(desc(expr_diff))
+dim(genes_post_implantation)
+
+heat_data <- counts_mat[genes_post_implantation$gene, ]
+
+heat_data_z <- t(scale(t(heat_data)))
+
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_heatmap_diff3.pdf"), width=8, height=10, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_heatmap_diff3.pdf"), width=10, height=15, onefile = F)
+}
+print(pheatmap(heat_data_z, show_rownames = FALSE))
+dev.off()
+
+top50_8 <- rownames(markers_post_implantation_8_ordered)[1:500]
+top50_7 <- rownames(markers_post_implantation_7_ordered)[1:500]
+top50_6 <- rownames(markers_post_implantation_6_ordered)[1:500]
+
+# Union all top genes
+top_union_genes <- union(top50_8, union(top50_7, top50_6))
+
+exp_data <- GetAssayData(pb_seurat, assay = "RNA", slot = "scale.data")
+exp_data <- exp_data[intersect(rownames(exp_data), top_union_genes), ]
+colnames(exp_data) <- colnames(pb_seurat)
+
+meta <- pb_seurat@meta.data
+exp_scale = exp_data
+
+#### plot heatmap ---- 
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_heatmap.pdf"), width=8, height=10, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_heatmap.pdf"), width=10, height=15, onefile = F)
+}
+print(
+  Heatmap(as.matrix(exp_scale[intersect(rownames(exp_scale), top_union_genes),]),
+          column_split = meta[ident_by],
+          show_row_names = F,
+          show_column_names = T,  # Show column names
+          show_column_dend = T,  # Show column dendrogram
+          column_title = "Post-implantation stage-specific genes expression",
+          use_raster = F,
+          col = colorRampPalette(rev(brewer.pal(9,"Spectral")))(100),
+          heatmap_legend_param = list(title='')))
+dev.off()
+
+### f. UMAP feature plot ----
+genes_to_plot <- head(genes_post_implantation, 25)[,1]
+
+plots <- lapply(genes_to_plot, function(gene) {
+  FeaturePlot(merge_data, features = gene, pt.size = 0.1, cols = c("lightgrey", "brown"), reduction = "umap", min.cutoff = "q05", max.cutoff = "q95") +
+    theme_void() + ggtitle(gene)
+})
+
+if (ident_by == "cell_info") {
+  png(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_umap_feature_plot.png"),
+      width = 3000, height = 3000, res = 300)
+} else {
+  png(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_umap_feature_plot.png"),
+      width = 3000, height = 3000, res = 300)
+}
+
+print(wrap_plots(plots, ncol = 5))
+dev.off()
+
+### g. save data ----
+saveRDS(pb_seurat, paste0(file_names_prefix, "data.rds"))
+write.table(genes_post_implantation,paste0(file_names_prefix, "_diff over 3 genes for heatmap.txt"), sep = "\t")
+write.csv(markers_post_implantation_8_ordered, paste0(file_names_prefix, "_E8.5_DEG.csv"), quote = F, row.names = T)
+write.csv(markers_post_implantation_7_ordered, paste0(file_names_prefix, "_E7.5_DEG.csv"), quote = F, row.names = T)
+write.csv(markers_post_implantation_6_ordered, paste0(file_names_prefix, "_E6.5_DEG.csv"), quote = F, row.names = T)
+
+# 8. Cell info & All genes ----
+## 1) merge_data ----
+dataset <- merge_data
+output_folder <- "."
+
+### a. Pseudobulk ----
+data_type <- "merge_data"
+ident_by <- "cell_info"
+use_all_genes <- TRUE
+
+Idents(dataset) <- ident_by
+
+on.exit({
+  while(dev.cur() > 1) dev.off()
+})
+
+file_names_prefix <- paste0(output_folder, "/", data_type, "-", ident_by, "-", ifelse(use_all_genes, "All_genes", "Hvg"), "-")
+
+# Pseudobulk
+dataset <- NormalizeData(dataset, normalization.method = "LogNormalize", scale.factor = 10000)
+pb_seurat <- Seurat:::PseudobulkExpression(dataset, return.seurat = T, method = "aggregate", # "average"
+                                           normalization.method = "LogNormalize", scale.factor = 10000)
+pb_seurat[[ident_by]] <- rownames(pb_seurat@meta.data)
+
+RhpcBLASctl::blas_set_num_threads(8)
+Idents(pb_seurat) <- ident_by
+
+# Variable features
+pb_seurat <- FindVariableFeatures(pb_seurat, selection.method = "vst", nfeatures = 2000)
+
+### b. PCA with selected PCs ----
+features_to_use <- if (use_all_genes) rownames(pb_seurat) else VariableFeatures(pb_seurat)
+pb_seurat <- ScaleData(pb_seurat, features = features_to_use) %>%
+  RunPCA(npcs = 10, features = features_to_use)
+
+pb_seurat <- JackStraw(pb_seurat, num.replicate = 10, dims = 14)
+pb_seurat <- ScoreJackStraw(pb_seurat, dims = 1:10) 
+
+p1 <- JackStrawPlot(pb_seurat, dims = 1:10)
+p2 <- ElbowPlot(pb_seurat, ndims = 10)
+
+pdf(paste0(file_names_prefix, "pca_elbow.pdf"), width = 12, height = 5, onefile = F)
+p1 | p2
+dev.off()
+
+pb_seurat <- ScaleData(pb_seurat, features = features_to_use) %>%
+  RunPCA(npcs = 8, features = features_to_use)
+
+## Get PCA coordinates and metadata
+pca_var <- pb_seurat[["pca"]]@stdev^2
+pca_var_perc <- round(100 * pca_var / sum(pca_var), 2)
+
+p <- DimPlot( pb_seurat, reduction = "pca", dims = c(1, 2), group.by = ident_by, label = TRUE, repel = TRUE, pt.size = 5) +
+  labs( x = paste0("PC1 (", pca_var_perc[1], "%)"),
+        y = paste0("PC2 (", pca_var_perc[2], "%)") )+ guides(color = guide_legend(ncol = 1))
+
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "PCA.pdf"), width=8, height=6, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "PCA.pdf"), width=25, height=23, onefile = F)
+}
+print(p)
+dev.off()
+
+### c. UMAP & tSNE ----
+pb_seurat <- RunTSNE(pb_seurat, dims = 1:8, perplexity = 3)
+pb_seurat <- RunUMAP(pb_seurat, dims = 1:8, n.neighbors = 2)
+
+p1 <- DimPlot(pb_seurat, reduction = "umap", group.by = ident_by, label = TRUE, repel = TRUE, pt.size = 5)+ guides(color = guide_legend(ncol = 1))
+p2 <- DimPlot(pb_seurat, reduction = "tsne", group.by = ident_by, label = TRUE, repel = TRUE, pt.size = 5)+ guides(color = guide_legend(ncol = 1))
+
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "umap_tsne.pdf"), width=20, height=10, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "umap_tsne.pdf"), width=33, height=15, onefile = F)
+}
+print(p1 | p2 )
+dev.off()
+
+### d. Correlation ----
+counts_mat <- GetAssayData(pb_seurat, assay = "RNA", slot = "scale.data")
+
+## Extract relevant columns for blastoid and E3.5-6.5 embryo
+blastoid_columns <- grep("blastoid|Blastoid", colnames(counts_mat), value = T)
+embryo_columns <- grep("E[3-8]\\.5|blastocyst", colnames(counts_mat), value = T)
+
+## Subset the data to focus on these columns (blastoid samples as x-axis, E3.5-6.5 embryos as y-axis)
+data_subset <- counts_mat[, c(blastoid_columns, embryo_columns)]
+
+## Perform Pearson correlation on the subsetted data
+correlation_matrix <- cor(data_subset[, embryo_columns],
+                          data_subset[, blastoid_columns],
+                          method = "pearson")
+
+## corr dotplot
+corr_long <- melt(correlation_matrix)
+colnames(corr_long) <- c("Sample1", "Sample2", "Correlation")
+
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "Corr.pdf"), width=6, height=5, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "Corr.pdf"), width=11, height=6, onefile = F)
+}
+print(  ggplot(corr_long, aes(x = Sample2, y = Sample1, size = (Correlation), color = Correlation)) +
+          geom_point() +
+          scale_size_continuous(range = c(2, 10)) +
+          scale_color_gradientn(colors = colorRampPalette(rev(brewer.pal(9, "Spectral")))(100)) +
+          theme_minimal() +
+          theme(axis.text.x = element_text(angle = 90, hjust = 1),
+                panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),) +
+          labs(title = "Correlation Dotplot", x = "", y = "", color = "Correlation") +
+          guides(size = "none") )
+dev.off()
+
+### e. Find markers for post-implantation stages ----
+markers_post_implantation_8 <- FindMarkers(
+  pb_seurat, 
+  slot = "data",
+  min.cells.group = 1,
+  ident.1 = c("E8.5"),
+  ident.2 = c("E7.5", "E6.5", "Public-blastocyst"), 
+  only.pos = T,
+  logfc.threshold = 0.25)
+markers_post_implantation_8_ordered <- markers_post_implantation_8 %>%
+  arrange(desc(avg_log2FC)) %>%
+  mutate(group = "E8.5")
+
+markers_post_implantation_7 <- FindMarkers(
+  pb_seurat, 
+  slot = "data",
+  min.cells.group = 1,
+  ident.1 = c("E7.5"),
+  ident.2 = c("E8.5", "E6.5", "Public-blastocyst"), 
+  only.pos = T,
+  logfc.threshold = 0.25)
+markers_post_implantation_7_ordered <- markers_post_implantation_7 %>%
+  arrange(desc(avg_log2FC)) %>%
+  mutate(group = "E7.5")
+
+markers_post_implantation_6 <- FindMarkers(
+  pb_seurat, 
+  slot = "data",
+  min.cells.group = 1,
+  ident.1 = c("E6.5"),
+  ident.2 = c("E7.5", "E8.5", "Public-blastocyst"), 
+  only.pos = T,
+  logfc.threshold = 0.25)
+markers_post_implantation_6_ordered <- markers_post_implantation_6 %>%
+  arrange(desc(avg_log2FC)) %>%
+  mutate(group = "E6.5")
+
+counts_mat <- GetAssayData(pb_seurat, assay = "RNA", slot = "scale.data")
+stage_info <- colnames(counts_mat)
+
+cols_E4_E8 <- grep("E4.5|E5.5|E6.5|E7.5|E8.5", stage_info, value = TRUE)
+cols_blast <- grep("Blastocyst|blastocyst", stage_info, value = TRUE)
+
+max_expr_post <- apply(counts_mat[, cols_E4_E8], 1, max)
+
+mean_expr_blast <- apply(matrix(counts_mat[, cols_blast], ncol = 1), 1, mean)
+
+expr_diff <- max_expr_post - mean_expr_blast
+
+genes_post_implantation <- data.frame(
+  gene = names(expr_diff)[which(expr_diff > 3)],
+  expr_diff = expr_diff[which(expr_diff > 3)]
+) %>% arrange(desc(expr_diff))
+dim(genes_post_implantation)
+
+heat_data <- counts_mat[genes_post_implantation$gene, ]
+
+heat_data_z <- t(scale(t(heat_data)))
+
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_heatmap_diff3.pdf"), width=8, height=10, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_heatmap_diff3.pdf"), width=10, height=15, onefile = F)
+}
+print(pheatmap(heat_data_z, show_rownames = FALSE))
+dev.off()
+
+top50_8 <- rownames(markers_post_implantation_8_ordered)[1:500]
+top50_7 <- rownames(markers_post_implantation_7_ordered)[1:500]
+top50_6 <- rownames(markers_post_implantation_6_ordered)[1:500]
+
+# Union all top genes
+top_union_genes <- union(top50_8, union(top50_7, top50_6))
+
+exp_data <- GetAssayData(pb_seurat, assay = "RNA", slot = "scale.data")
+exp_data <- exp_data[intersect(rownames(exp_data), top_union_genes), ]
+colnames(exp_data) <- colnames(pb_seurat)
+
+meta <- pb_seurat@meta.data
+exp_scale = exp_data
+
+#### plot heatmap ---- 
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_heatmap.pdf"), width=8, height=10, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_heatmap.pdf"), width=10, height=15, onefile = F)
+}
+print(
+  Heatmap(as.matrix(exp_scale[intersect(rownames(exp_scale), top_union_genes),]),
+          column_split = meta[ident_by],
+          show_row_names = F,
+          show_column_names = T,  # Show column names
+          show_column_dend = T,  # Show column dendrogram
+          column_title = "Post-implantation stage-specific genes expression",
+          use_raster = F,
+          col = colorRampPalette(rev(brewer.pal(9,"Spectral")))(100),
+          heatmap_legend_param = list(title='')))
+dev.off()
+
+### f. UMAP feature plot ----
+genes_to_plot <- head(genes_post_implantation, 25)[,1]
+
+plots <- lapply(genes_to_plot, function(gene) {
+  FeaturePlot(merge_data, features = gene, pt.size = 0.1, cols = c("lightgrey", "brown"), reduction = "umap", min.cutoff = "q05", max.cutoff = "q95") +
+    theme_void() + ggtitle(gene)
+})
+
+if (ident_by == "cell_info") {
+  png(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_umap_feature_plot.png"),
+      width = 3000, height = 3000, res = 300)
+} else {
+  png(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_umap_feature_plot.png"),
+      width = 3000, height = 3000, res = 300)
+}
+
+print(wrap_plots(plots, ncol = 5))
+dev.off()
+
+### g. save data ----
+saveRDS(pb_seurat, paste0(file_names_prefix, "data.rds"))
+write.table(genes_post_implantation,paste0(file_names_prefix, "_diff over 3 genes for heatmap.txt"), sep = "\t")
+write.csv(markers_post_implantation_8_ordered, paste0(file_names_prefix, "_E8.5_DEG.csv"), quote = F, row.names = T)
+write.csv(markers_post_implantation_7_ordered, paste0(file_names_prefix, "_E7.5_DEG.csv"), quote = F, row.names = T)
+write.csv(markers_post_implantation_6_ordered, paste0(file_names_prefix, "_E6.5_DEG.csv"), quote = F, row.names = T)
+
+## 2) merge_data_subset ----
+dataset <- merge_data_subset
+output_folder <- "."
+
+### a. Pseudobulk ----
+data_type <- "merge_data_subset"
+ident_by <- "cell_info"
+use_all_genes <- TRUE
+
+Idents(dataset) <- ident_by
+
+on.exit({
+  while(dev.cur() > 1) dev.off()
+})
+
+file_names_prefix <- paste0(output_folder, "/", data_type, "-", ident_by, "-", ifelse(use_all_genes, "All_genes", "Hvg"), "-")
+
+# Pseudobulk
+dataset <- NormalizeData(dataset, normalization.method = "LogNormalize", scale.factor = 10000)
+pb_seurat <- Seurat:::PseudobulkExpression(dataset, return.seurat = T, method = "aggregate", # "average"
+                                           normalization.method = "LogNormalize", scale.factor = 10000)
+pb_seurat[[ident_by]] <- rownames(pb_seurat@meta.data)
+
+RhpcBLASctl::blas_set_num_threads(8)
+Idents(pb_seurat) <- ident_by
+
+# Variable features
+pb_seurat <- FindVariableFeatures(pb_seurat, selection.method = "vst", nfeatures = 2000)
+
+### b. PCA with selected PCs ----
+features_to_use <- if (use_all_genes) rownames(pb_seurat) else VariableFeatures(pb_seurat)
+pb_seurat <- ScaleData(pb_seurat, features = features_to_use) %>%
+  RunPCA(npcs = 10, features = features_to_use)
+
+pb_seurat <- JackStraw(pb_seurat, num.replicate = 10, dims = 14)
+pb_seurat <- ScoreJackStraw(pb_seurat, dims = 1:10) 
+
+p1 <- JackStrawPlot(pb_seurat, dims = 1:10)
+p2 <- ElbowPlot(pb_seurat, ndims = 10)
+
+pdf(paste0(file_names_prefix, "pca_elbow.pdf"), width = 12, height = 5, onefile = F)
+p1 | p2
+dev.off()
+
+pb_seurat <- ScaleData(pb_seurat, features = features_to_use) %>%
+  RunPCA(npcs = 7, features = features_to_use)
+
+## Get PCA coordinates and metadata
+pca_var <- pb_seurat[["pca"]]@stdev^2
+pca_var_perc <- round(100 * pca_var / sum(pca_var), 2)
+
+p <- DimPlot( pb_seurat, reduction = "pca", dims = c(1, 2), group.by = ident_by, label = TRUE, repel = TRUE, pt.size = 5) +
+  labs( x = paste0("PC1 (", pca_var_perc[1], "%)"),
+        y = paste0("PC2 (", pca_var_perc[2], "%)") )+ guides(color = guide_legend(ncol = 1))
+
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "PCA.pdf"), width=8, height=6, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "PCA.pdf"), width=25, height=23, onefile = F)
+}
+print(p)
+dev.off()
+
+### c. UMAP & tSNE ----
+pb_seurat <- RunTSNE(pb_seurat, dims = 1:7, perplexity = 3)
+pb_seurat <- RunUMAP(pb_seurat, dims = 1:7, n.neighbors = 2)
+
+p1 <- DimPlot(pb_seurat, reduction = "umap", group.by = ident_by, label = TRUE, repel = TRUE, pt.size = 5)+ guides(color = guide_legend(ncol = 1))
+p2 <- DimPlot(pb_seurat, reduction = "tsne", group.by = ident_by, label = TRUE, repel = TRUE, pt.size = 5)+ guides(color = guide_legend(ncol = 1))
+
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "umap_tsne.pdf"), width=20, height=10, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "umap_tsne.pdf"), width=33, height=15, onefile = F)
+}
+print(p1 | p2 )
+dev.off()
+
+### d. Correlation ----
+counts_mat <- GetAssayData(pb_seurat, assay = "RNA", slot = "scale.data")
+
+## Extract relevant columns for blastoid and E3.5-6.5 embryo
+blastoid_columns <- grep("blastoid|Blastoid", colnames(counts_mat), value = T)
+embryo_columns <- grep("E[3-8]\\.5|blastocyst", colnames(counts_mat), value = T)
+
+## Subset the data to focus on these columns (blastoid samples as x-axis, E3.5-6.5 embryos as y-axis)
+data_subset <- counts_mat[, c(blastoid_columns, embryo_columns)]
+
+## Perform Pearson correlation on the subsetted data
+correlation_matrix <- cor(data_subset[, embryo_columns],
+                          data_subset[, blastoid_columns],
+                          method = "pearson")
+
+## corr dotplot
+corr_long <- melt(correlation_matrix)
+colnames(corr_long) <- c("Sample1", "Sample2", "Correlation")
+
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "Corr.pdf"), width=6, height=5, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "Corr.pdf"), width=11, height=6, onefile = F)
+}
+print(  ggplot(corr_long, aes(x = Sample2, y = Sample1, size = (Correlation), color = Correlation)) +
+          geom_point() +
+          scale_size_continuous(range = c(2, 10)) +
+          scale_color_gradientn(colors = colorRampPalette(rev(brewer.pal(9, "Spectral")))(100)) +
+          theme_minimal() +
+          theme(axis.text.x = element_text(angle = 90, hjust = 1),
+                panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),) +
+          labs(title = "Correlation Dotplot", x = "", y = "", color = "Correlation") +
+          guides(size = "none") )
+dev.off()
+
+### e. Find markers for post-implantation stages ----
+markers_post_implantation_8 <- FindMarkers(
+  pb_seurat, 
+  slot = "data",
+  min.cells.group = 1,
+  ident.1 = c("E8.5"),
+  ident.2 = c("E7.5", "E6.5", "Public-blastocyst"), 
+  only.pos = T,
+  logfc.threshold = 0.25)
+markers_post_implantation_8_ordered <- markers_post_implantation_8 %>%
+  arrange(desc(avg_log2FC)) %>%
+  mutate(group = "E8.5")
+
+markers_post_implantation_7 <- FindMarkers(
+  pb_seurat, 
+  slot = "data",
+  min.cells.group = 1,
+  ident.1 = c("E7.5"),
+  ident.2 = c("E8.5", "E6.5", "Public-blastocyst"), 
+  only.pos = T,
+  logfc.threshold = 0.25)
+markers_post_implantation_7_ordered <- markers_post_implantation_7 %>%
+  arrange(desc(avg_log2FC)) %>%
+  mutate(group = "E7.5")
+
+markers_post_implantation_6 <- FindMarkers(
+  pb_seurat, 
+  slot = "data",
+  min.cells.group = 1,
+  ident.1 = c("E6.5"),
+  ident.2 = c("E7.5", "E8.5", "Public-blastocyst"), 
+  only.pos = T,
+  logfc.threshold = 0.25)
+markers_post_implantation_6_ordered <- markers_post_implantation_6 %>%
+  arrange(desc(avg_log2FC)) %>%
+  mutate(group = "E6.5")
+
+counts_mat <- GetAssayData(pb_seurat, assay = "RNA", slot = "scale.data")
+stage_info <- colnames(counts_mat)
+
+cols_E4_E8 <- grep("E4.5|E5.5|E6.5|E7.5|E8.5", stage_info, value = TRUE)
+cols_blast <- grep("Blastocyst|blastocyst", stage_info, value = TRUE)
+
+max_expr_post <- apply(counts_mat[, cols_E4_E8], 1, max)
+
+mean_expr_blast <- apply(matrix(counts_mat[, cols_blast], ncol = 1), 1, mean)
+
+expr_diff <- max_expr_post - mean_expr_blast
+
+genes_post_implantation <- data.frame(
+  gene = names(expr_diff)[which(expr_diff > 3)],
+  expr_diff = expr_diff[which(expr_diff > 3)]
+) %>% arrange(desc(expr_diff))
+dim(genes_post_implantation)
+
+heat_data <- counts_mat[genes_post_implantation$gene, ]
+
+heat_data_z <- t(scale(t(heat_data)))
+
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_heatmap_diff3.pdf"), width=8, height=10, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_heatmap_diff3.pdf"), width=10, height=15, onefile = F)
+}
+print(pheatmap(heat_data_z, show_rownames = FALSE))
+dev.off()
+
+top50_8 <- rownames(markers_post_implantation_8_ordered)[1:500]
+top50_7 <- rownames(markers_post_implantation_7_ordered)[1:500]
+top50_6 <- rownames(markers_post_implantation_6_ordered)[1:500]
+
+# Union all top genes
+top_union_genes <- union(top50_8, union(top50_7, top50_6))
+
+exp_data <- GetAssayData(pb_seurat, assay = "RNA", slot = "scale.data")
+exp_data <- exp_data[intersect(rownames(exp_data), top_union_genes), ]
+colnames(exp_data) <- colnames(pb_seurat)
+
+meta <- pb_seurat@meta.data
+exp_scale = exp_data
+
+#### plot heatmap ---- 
+if (ident_by == "cell_info") {
+  pdf(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_heatmap.pdf"), width=8, height=10, onefile = F)
+} else {
+  pdf(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_heatmap.pdf"), width=10, height=15, onefile = F)
+}
+print(
+  Heatmap(as.matrix(exp_scale[intersect(rownames(exp_scale), top_union_genes),]),
+          column_split = meta[ident_by],
+          show_row_names = F,
+          show_column_names = T,  # Show column names
+          show_column_dend = T,  # Show column dendrogram
+          column_title = "Post-implantation stage-specific genes expression",
+          use_raster = F,
+          col = colorRampPalette(rev(brewer.pal(9,"Spectral")))(100),
+          heatmap_legend_param = list(title='')))
+dev.off()
+
+### f. UMAP feature plot ----
+genes_to_plot <- head(genes_post_implantation, 25)[,1]
+
+plots <- lapply(genes_to_plot, function(gene) {
+  FeaturePlot(merge_data, features = gene, pt.size = 0.1, cols = c("lightgrey", "brown"), reduction = "umap", min.cutoff = "q05", max.cutoff = "q95") +
+    theme_void() + ggtitle(gene)
+})
+
+if (ident_by == "cell_info") {
+  png(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_umap_feature_plot.png"),
+      width = 3000, height = 3000, res = 300)
+} else {
+  png(paste0(file_names_prefix, "filtered_post-implantation stage-specific genes_umap_feature_plot.png"),
+      width = 3000, height = 3000, res = 300)
+}
+
+print(wrap_plots(plots, ncol = 5))
+dev.off()
+
+### g. save data ----
+saveRDS(pb_seurat, paste0(file_names_prefix, "data.rds"))
+write.table(genes_post_implantation,paste0(file_names_prefix, "_diff over 3 genes for heatmap.txt"), sep = "\t")
+write.csv(markers_post_implantation_8_ordered, paste0(file_names_prefix, "_E8.5_DEG.csv"), quote = F, row.names = T)
+write.csv(markers_post_implantation_7_ordered, paste0(file_names_prefix, "_E7.5_DEG.csv"), quote = F, row.names = T)
+write.csv(markers_post_implantation_6_ordered, paste0(file_names_prefix, "_E6.5_DEG.csv"), quote = F, row.names = T)
